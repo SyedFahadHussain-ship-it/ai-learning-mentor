@@ -30,20 +30,13 @@ st.markdown("""
             font-weight: bold;
             width: 100%;
         }
-        .card {
-            background-color: #1E232A;
-            padding: 20px;
-            border-radius: 10px;
-            border: 1px solid #30363D;
-            margin-bottom: 15px;
-        }
     </style>
 """, unsafe_allow_html=True)
 
 class WeeklyPlan(BaseModel):
     week_number: int = Field(description="The week index")
     focus_area: str = Field(description="Main topic or focus for the week")
-    topics_to_cover: list[str] = Field(description="List of specific sub-topics")
+    topics_to_cover: list[str] = Field(description="List of specific sub-topics strictly for the target domain")
     practical_action: str = Field(description="Hands-on exercise or task for the week")
 
 class RecommendedResource(BaseModel):
@@ -65,7 +58,7 @@ class RoadmapSchema(BaseModel):
 def get_gemini_client():
     api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        st.error("GEMINI_API_KEY is not configured.")
+        st.error("GEMINI_API_KEY is not configured in Secrets.")
         st.stop()
     return genai.Client(api_key=api_key)
 
@@ -73,28 +66,32 @@ def generate_roadmap(name: str, skills: str, goal: str, hours: int, weeks: int) 
     client = get_gemini_client()
     
     system_instruction = """
-    You are an expert EdTech AI Career & Learning Mentor. Your role is to build highly practical, 
-    personalized learning roadmaps for students. You carefully bridge the gap between their current skills 
-    and target career goals based on their weekly time commitment.
+    You are an AI EdTech Learning Mentor.
+    
+    STRICT RULES FOR ROADMAP GENERATION:
+    1. Base the roadmap EXCLUSIVELY on the user's provided "Current Skills" and "Target Career Goal".
+    2. DO NOT mention, compare with, or transition from any programming language or technology that the user did NOT type in their input.
+    3. Treat every request as a completely fresh, independent roadmap for the specific input technologies provided.
+    4. If the user enters JavaScript, the roadmap must strictly focus on JavaScript tools and ecosystems. If C++, focus only on C++.
     """
     
     prompt = f"""
-    Create a detailed, step-by-step learning roadmap for a student with the following profile:
-    - Name: {name}
+    Create a standalone learning roadmap for:
+    - Student Name: {name}
     - Current Skills: {skills}
     - Target Career Goal: {goal}
     - Daily Study Commitment: {hours} hours/day
     - Target Timeline: {weeks} weeks
 
-    Ensure the weekly study plan explicitly spans {weeks} weeks and scales appropriately with their daily commitment.
+    Generate a tailored, week-by-week plan focused ONLY on bridging the gap between '{skills}' and '{goal}'.
     """
 
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-1.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
-            temperature=0.3,
+            temperature=0.1,
             response_mime_type="application/json",
             response_schema=RoadmapSchema,
         ),
@@ -144,18 +141,23 @@ def main():
     st.sidebar.title("👤 Student Profile")
 
     name = st.sidebar.text_input("Full Name", value="Fahad")
-    skills = st.sidebar.text_area("Current Skills", value="Basic Python, HTML/CSS, SQL")
-    goal = st.sidebar.text_input("Target Career Goal", value="Junior AI Engineer")
+    skills = st.sidebar.text_area("Current Skills", placeholder="Enter skills (e.g., JavaScript, HTML, CSS)")
+    goal = st.sidebar.text_input("Target Career Goal", placeholder="Enter goal (e.g., Full Stack Web Developer)")
     hours = st.sidebar.slider("Daily Study Commitment (Hours)", 1, 12, 2)
     weeks = st.sidebar.slider("Target Timeline (Weeks)", 1, 12, 4)
 
     st.title("🎓 AI Personal Learning Mentor")
 
     if st.sidebar.button("🚀 Generate Roadmap"):
+        if not skills.strip() or not goal.strip():
+            st.sidebar.error("Please enter both Current Skills and Target Goal!")
+            return
+
+        # Purana saved state wipe karna taake bilkul fresh roadmap generate ho
         if "roadmap" in st.session_state:
             del st.session_state["roadmap"]
             
-        with st.spinner("Generating your updated personalized plan..."):
+        with st.spinner("Generating fresh roadmap for your input..."):
             try:
                 roadmap = generate_roadmap(name, skills, goal, hours, weeks)
                 st.session_state["roadmap"] = roadmap
