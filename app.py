@@ -1,130 +1,232 @@
+import json
 import os
+import io
 import streamlit as st
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
-from typing import List
-from dotenv import load_dotenv
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
-# Load environment variables
-load_dotenv()
+st.set_page_config(
+    page_title="AI Personal Learning Mentor",
+    page_icon="🎓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Initialize Gemini Client
-@st.cache_resource
+st.markdown("""
+    <style>
+        .stApp {
+            background-color: #0E1117;
+            color: #FAFAFA;
+        }
+        .stButton>button {
+            background-color: #FF4B4B;
+            color: white;
+            border-radius: 8px;
+            font-weight: bold;
+            width: 100%;
+        }
+        .card {
+            background-color: #1E232A;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #30363D;
+            margin-bottom: 15px;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+class WeeklyPlan(BaseModel):
+    week_number: int = Field(description="The week index")
+    focus_area: str = Field(description="Main topic or focus for the week")
+    topics_to_cover: list[str] = Field(description="List of specific sub-topics")
+    practical_action: str = Field(description="Hands-on exercise or task for the week")
+
+class RecommendedResource(BaseModel):
+    title: str = Field(description="Name of the resource or platform")
+    resource_type: str = Field(description="Type of resource")
+    description: str = Field(description="Brief explanation of why it is useful")
+
+class RoadmapSchema(BaseModel):
+    student_name: str
+    target_role: str
+    summary: str = Field(description="Overview of the learning strategy and path")
+    recommended_skills: list[str] = Field(description="Key skills required to bridge the gap")
+    weekly_study_plan: list[WeeklyPlan] = Field(description="Structured weekly breakdown")
+    suggested_projects: list[str] = Field(description="Portfolio project ideas to build")
+    learning_resources: list[RecommendedResource] = Field(description="Curated learning materials")
+    career_tips: list[str] = Field(description="Practical tips to prepare for job applications")
+    interview_questions: list[str] = Field(description="Top practice interview questions for this role")
+
 def get_gemini_client():
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        st.error("Missing GEMINI_API_KEY in .env file.")
+        st.error("GEMINI_API_KEY is not configured.")
         st.stop()
     return genai.Client(api_key=api_key)
 
-client = get_gemini_client()
-
-# --- 1. PYDANTIC SCHEMAS ---
-class Resource(BaseModel):
-    title: str = Field(description="Name of course or documentation")
-    type: str = Field(description="Type: Free Course, Paid Course, Book, Doc, Video")
-    link: str = Field(description="URL or search query")
-
-class Project(BaseModel):
-    title: str = Field(description="Project title")
-    description: str = Field(description="Short summary of project and skills applied")
-
-class WeeklyPlan(BaseModel):
-    week_number: int = Field(description="Week index (e.g., 1)")
-    focus_topic: str = Field(description="Main topic for the week")
-    daily_breakdown: List[str] = Field(description="List of daily tasks for this week")
-
-class LearningRoadmap(BaseModel):
-    student_name: str
-    target_role: str
-    recommended_skills: List[str] = Field(description="Key skills to acquire")
-    weekly_plan: List[WeeklyPlan] = Field(description="Chronological weekly plan")
-    suggested_projects: List[Project] = Field(description="Portfolio projects")
-    learning_resources: List[Resource] = Field(description="Learning links/materials")
-    career_tips: List[str] = Field(description="Advice for landing the role")
-
-# --- 2. STREAMLIT UI ---
-st.set_page_config(page_title="AI Personal Learning Mentor", page_icon="🎓", layout="wide")
-
-st.title("🎓 AI Personal Learning Mentor")
-st.caption("Generate tailored learning roadmaps aligned with your career goals.")
-
-with st.sidebar:
-    st.header("👤 Profile & Preferences")
-    name = st.text_input("Full Name", value="fahad")
-    current_skills = st.text_area("Current Skills", value="Basic Python, HTML/CSS, SQL")
-    career_goal = st.text_input("Target Career Goal", value="Junior AI Engineer")
-    daily_hours = st.slider("Daily Study Commitment (Hours)", min_value=1, max_value=8, value=2)
-    weeks_duration = st.slider("Target Duration (Weeks)", min_value=2, max_value=12, value=4)
+def generate_roadmap(name: str, skills: str, goal: str, hours: int, weeks: int) -> RoadmapSchema:
+    client = get_gemini_client()
     
-    submit_btn = st.button("🚀 Generate Roadmap", type="primary", use_container_width=True)
+    system_instruction = """
+    You are an expert EdTech AI Career & Learning Mentor. Your role is to build highly practical, 
+    personalized learning roadmaps for students. You carefully bridge the gap between their current skills 
+    and target career goals based on their weekly time commitment.
+    """
+    
+    prompt = f"""
+    Create a detailed, step-by-step learning roadmap for a student with the following profile:
+    - Name: {name}
+    - Current Skills: {skills}
+    - Target Career Goal: {goal}
+    - Daily Study Commitment: {hours} hours/day
+    - Target Timeline: {weeks} weeks
 
-if submit_btn:
-    if not current_skills or not career_goal:
-        st.warning("Please fill in both current skills and career goal.")
-    else:
-        with st.spinner("Analyzing skill gaps and generating roadmap..."):
-            prompt = f"""
-            Generate a personalized learning roadmap for:
-            - Student Name: {name}
-            - Current Skills: {current_skills}
-            - Career Goal: {career_goal}
-            - Available Study Time: {daily_hours} hours per day
-            - Target Duration: {weeks_duration} weeks
-            """
+    Ensure the weekly study plan explicitly spans {weeks} weeks and scales appropriately with their daily commitment.
+    """
 
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.3,
+            response_mime_type="application/json",
+            response_schema=RoadmapSchema,
+        ),
+    )
+    
+    return RoadmapSchema.model_validate_json(response.text)
+
+def create_pdf(roadmap: RoadmapSchema) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=20, leading=24, textColor=colors.HexColor('#1E293B'))
+    heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=14, leading=18, textColor=colors.HexColor('#0F172A'), spaceBefore=12, spaceAfter=6)
+    body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=10, leading=14, textColor=colors.HexColor('#334155'))
+
+    elements = []
+    
+    elements.append(Paragraph(f"<b>Personalized Learning Roadmap: {roadmap.target_role}</b>", title_style))
+    elements.append(Paragraph(f"Prepared for: <b>{roadmap.student_name}</b>", body_style))
+    elements.append(Spacer(1, 10))
+    elements.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#CBD5E1'), spaceAfter=15))
+
+    elements.append(Paragraph("<b>Overview</b>", heading_style))
+    elements.append(Paragraph(roadmap.summary, body_style))
+
+    elements.append(Paragraph("<b>Recommended Skills to Acquire</b>", heading_style))
+    elements.append(Paragraph(", ".join(roadmap.recommended_skills), body_style))
+
+    elements.append(Paragraph("<b>Weekly Study Plan</b>", heading_style))
+    for week in roadmap.weekly_study_plan:
+        elements.append(Paragraph(f"<b>Week {week.week_number}: {week.focus_area}</b>", body_style))
+        for topic in week.topics_to_cover:
+            elements.append(Paragraph(f"• {topic}", body_style))
+        elements.append(Paragraph(f"<i>Action: {week.practical_action}</i>", body_style))
+        elements.append(Spacer(1, 6))
+
+    elements.append(Paragraph("<b>Portfolio Projects</b>", heading_style))
+    for proj in roadmap.suggested_projects:
+        elements.append(Paragraph(f"• {proj}", body_style))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def main():
+    st.sidebar.title("👤 Student Profile")
+
+    name = st.sidebar.text_input("Full Name", value="Fahad")
+    skills = st.sidebar.text_area("Current Skills", value="Basic Python, HTML/CSS, SQL")
+    goal = st.sidebar.text_input("Target Career Goal", value="Junior AI Engineer")
+    hours = st.sidebar.slider("Daily Study Commitment (Hours)", 1, 12, 2)
+    weeks = st.sidebar.slider("Target Timeline (Weeks)", 1, 12, 4)
+
+    st.title("🎓 AI Personal Learning Mentor")
+
+    if st.sidebar.button("🚀 Generate Roadmap"):
+        if "roadmap" in st.session_state:
+            del st.session_state["roadmap"]
+            
+        with st.spinner("Generating your updated personalized plan..."):
             try:
-                response = client.models.generate_content(
-                    model='gemini-3.6-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=LearningRoadmap,
-                        temperature=0.3,
-                        system_instruction="You are an expert EdTech Career Mentor and Technical Curriculum Designer."
-                    )
-                )
-
-                # Direct object parsing from Gemini SDK
-                st.session_state['roadmap'] = response.parsed
-
+                roadmap = generate_roadmap(name, skills, goal, hours, weeks)
+                st.session_state["roadmap"] = roadmap
+                st.rerun()
             except Exception as e:
                 st.error(f"Error generating roadmap: {e}")
 
-if 'roadmap' in st.session_state:
-    roadmap = st.session_state['roadmap']
+    if "roadmap" in st.session_state:
+        roadmap: RoadmapSchema = st.session_state["roadmap"]
 
-    st.success(f"Roadmap Generated for **{roadmap.student_name}**! Target Role: **{roadmap.target_role}**")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader(f"📍 Roadmap for {roadmap.student_name}: {roadmap.target_role}")
+        with col2:
+            pdf_bytes = create_pdf(roadmap)
+            st.download_button(
+                label="📄 Export as PDF",
+                data=pdf_bytes,
+                file_name=f"{roadmap.student_name.lower().replace(' ', '_')}_roadmap.pdf",
+                mime="application/pdf"
+            )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Weekly Plan", "🛠️ Key Skills", "🚀 Projects", "📚 Resources", "💡 Career Tips"])
+        st.markdown(f"**Overview:** {roadmap.summary}")
+        st.divider()
 
-    with tab1:
-        st.subheader("Weekly Study Schedule")
-        for week in roadmap.weekly_plan:
-            with st.expander(f"Week {week.week_number}: {week.focus_topic}", expanded=True):
-                for day_task in week.daily_breakdown:
-                    st.write(f"- {day_task}")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.markdown("### 🎯 Key Skills to Master")
+            for skill in roadmap.recommended_skills:
+                st.markdown(f"- **{skill}**")
 
-    with tab2:
-        st.subheader("Recommended Skills to Learn")
-        cols = st.columns(3)
-        for idx, skill in enumerate(roadmap.recommended_skills):
-            cols[idx % 3].info(f"✔ **{skill}**")
+        with col_right:
+            st.markdown("### 🛠️ Portfolio Projects")
+            for project in roadmap.suggested_projects:
+                st.markdown(f"- {project}")
 
-    with tab3:
-        st.subheader("Suggested Portfolio Projects")
-        for proj in roadmap.suggested_projects:
-            st.markdown(f"### 📌 {proj.title}")
-            st.write(proj.description)
-            st.divider()
+        st.divider()
 
-    with tab4:
-        st.subheader("Curated Learning Resources")
-        for res in roadmap.learning_resources:
-            st.markdown(f"- **[{res.type}]** [{res.title}]({res.link})")
+        st.markdown("### 📅 Weekly Study Plan")
+        week_tabs = st.tabs([f"Week {w.week_number}" for w in roadmap.weekly_study_plan])
+        
+        for tab, week in zip(week_tabs, roadmap.weekly_study_plan):
+            with tab:
+                st.markdown(f"#### Focus: {week.focus_area}")
+                st.markdown("**Topics to Cover:**")
+                for topic in week.topics_to_cover:
+                    st.markdown(f"- {topic}")
+                st.info(f"💡 **Practical Task:** {week.practical_action}")
 
-    with tab5:
-        st.subheader("Career & Interview Tips")
-        for tip in roadmap.career_tips:
-            st.write(f"💡 {tip}")
+        st.divider()
+
+        col_res, col_tips = st.columns(2)
+        with col_res:
+            st.markdown("### 📚 Recommended Resources")
+            for res in roadmap.learning_resources:
+                st.markdown(f"**[{res.resource_type}] {res.title}**")
+                st.caption(res.description)
+
+        with col_tips:
+            st.markdown("### 💡 Career & Interview Preparation")
+            st.markdown("**Career Tips:**")
+            for tip in roadmap.career_tips:
+                st.markdown(f"- {tip}")
+            
+            st.markdown("**Sample Interview Questions:**")
+            for q in roadmap.interview_questions:
+                st.markdown(f"- *\"{q}\"*")
+
+        st.divider()
+        with st.expander("🔍 View Raw JSON Response"):
+            st.json(roadmap.model_dump_json(indent=2))
+
+if __name__ == "__main__":
+    main()
